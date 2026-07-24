@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "titanic-agent"
+version = "0.1.0"
+description = "LLM 기반 타이타닉 데이터 분석 AI Agent + 연계 REST API"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "anthropic>=0.40",
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
