@@ -80,8 +80,8 @@ LLM 없이 동작하는 ML 예측 엔드포인트. 기존 시스템이 예측 �
 ```json
 {
   "survived": true,
-  "survival_probability": 0.9013,
-  "model_cv_accuracy": 0.827
+  "survival_probability": 0.879,
+  "model_cv_accuracy": 0.8272
 }
 ```
 

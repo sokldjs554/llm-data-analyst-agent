@@ -113,7 +113,7 @@ uvicorn titanic_agent.api:app --app-dir src --reload
 curl -X POST http://localhost:8000/api/v1/predict \
   -H "Content-Type: application/json" \
   -d '{"pclass": 1, "sex": "female", "age": 30}'
-# → {"survived": true, "survival_probability": 0.9, "model_cv_accuracy": 0.827}
+# → {"survived": true, "survival_probability": 0.879, "model_cv_accuracy": 0.8272}
 
 # 에이전트 자연어 질의 (ANTHROPIC_API_KEY 필요)
 curl -X POST http://localhost:8000/api/v1/chat \
