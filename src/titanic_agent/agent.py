@@ -91,7 +91,10 @@ class TitanicAgent:
             )
             messages.append({"role": "assistant", "content": response.raw_content})
 
-            if response.stop_reason == "tool_use":
+            # stop_reason이 아니라 "tool_use 블록 존재"로 판단한다:
+            # max_tokens로 잘린 턴에도 완결된 tool_use 블록이 있을 수 있고,
+            # 결과 없이 이력에 남기면 이후 요청이 API 오류(미결 tool_use)가 된다.
+            if response.tool_use_blocks:
                 results = []
                 for block in response.tool_use_blocks:
                     record = self._execute_tool(block.name, block.input)
@@ -121,8 +124,11 @@ class TitanicAgent:
                 )
 
             # end_turn / max_tokens → 현재 텍스트를 최종 답변으로 반환
+            answer = response.text
+            if response.stop_reason == "max_tokens":
+                answer = (answer + "\n\n(응답이 길이 제한으로 잘렸습니다.)").strip()
             return AgentResult(
-                answer=response.text,
+                answer=answer,
                 tool_calls=tool_calls,
                 history=messages,
                 stop_reason=response.stop_reason,

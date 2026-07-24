@@ -15,7 +15,7 @@ LLM 기반 AI Agent 개발의 핵심 역량 4가지를 하나의 동작하는 �
 |---|---|---|
 | **① 대상 업무·데이터의 이해와 분석** | 데이터셋 스키마·결측치·편향 분석, EDA → 재사용 가능한 데이터 모듈로 정리 | [docs/01-data-understanding.md](docs/01-data-understanding.md), `src/titanic_agent/data.py` |
 | **② AI Agent 개발 전략 수립** | 도구 설계 원칙(임의 코드 실행 금지), 수동 루프 채택 근거, 모델·프롬프트 전략, 확장 로드맵 | [docs/02-agent-strategy.md](docs/02-agent-strategy.md) |
-| **③ AI Agent 개발 및 테스트** | tool-use 에이전트 루프 구현 + Mock LLM 기반 결정적 테스트 30건 (API 키 불필요) | `src/titanic_agent/agent.py`, `tests/`, [docs/04-test-strategy.md](docs/04-test-strategy.md) |
+| **③ AI Agent 개발 및 테스트** | tool-use 에이전트 루프 구현 + Mock LLM 기반 결정적 테스트 38건 (API 키 불필요) | `src/titanic_agent/agent.py`, `tests/`, [docs/04-test-strategy.md](docs/04-test-strategy.md) |
 | **④ 시스템 연계 API 개발** | FastAPI REST API — 에이전트 질의(/chat)와 LLM 없이 동작하는 ML 예측(/predict) 분리 설계 | `src/titanic_agent/api.py`, [docs/03-api-spec.md](docs/03-api-spec.md) |
 
 ## 아키텍처
@@ -84,7 +84,7 @@ pip install -r requirements.txt
 **1) 테스트 (API 키 불필요)**
 
 ```bash
-python -m pytest tests/ -v        # 30 passed
+python -m pytest tests/ -v        # 38 passed
 ```
 
 **2) 오프라인 데모 (API 키 불필요)** — Mock LLM으로 에이전트 루프 재생
@@ -134,7 +134,7 @@ curl -X POST http://localhost:8000/api/v1/chat \
 │   ├── llm.py                    # LLM 추상화 (Anthropic / Mock)
 │   ├── agent.py                  # tool-use 에이전트 루프
 │   └── api.py                    # FastAPI 연계 API
-├── tests/                        # 30개 테스트 (전부 오프라인 실행)
+├── tests/                        # 38개 테스트 (전부 오프라인 실행)
 ├── scripts/demo.py               # CLI 데모 (단일 질문/대화형/Mock)
 └── docs/                         # 설계 문서 4편 (한국어)
 ```

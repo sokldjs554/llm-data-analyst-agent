@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Literal
@@ -24,7 +26,35 @@ from .llm import AnthropicLLM, LLMClient
 from .ml import SurvivalModel
 from .tools import ToolExecutor
 
-MAX_SESSIONS = 100  # 인메모리 세션 상한 (초과 시 오래된 세션부터 제거)
+MAX_SESSIONS = 100  # 인메모리 세션 상한 (초과 시 가장 오래 사용되지 않은 세션부터 제거)
+
+logger = logging.getLogger(__name__)
+
+
+def _map_agent_error(exc: Exception) -> HTTPException:
+    """LLM/에이전트 예외를 연계 시스템이 해석 가능한 상태 코드로 변환한다.
+
+    rate limit이 500으로 보이면 소비 시스템이 잘못된 방식으로 재시도하므로
+    재시도 가능(429/502)과 서버 내부 오류(500)를 구분해 준다.
+    """
+    logger.exception("에이전트 처리 실패")
+    try:
+        import anthropic
+    except ImportError:  # MockLLM만 쓰는 환경
+        anthropic = None
+    if anthropic is not None:
+        if isinstance(exc, anthropic.RateLimitError):
+            return HTTPException(
+                status_code=429, detail="LLM 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요."
+            )
+        if isinstance(exc, anthropic.APIConnectionError):
+            return HTTPException(status_code=502, detail="LLM 서비스에 연결할 수 없습니다.")
+        if isinstance(exc, anthropic.APIStatusError):
+            return HTTPException(
+                status_code=502,
+                detail=f"LLM 서비스 오류입니다(status={exc.status_code}). 잠시 후 다시 시도하세요.",
+            )
+    return HTTPException(status_code=500, detail="에이전트 처리 중 오류가 발생했습니다.")
 
 
 # ── 요청/응답 모델 ────────────────────────────────────────────────────
@@ -104,7 +134,9 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
                 if agent_llm is not None
                 else None
             ),
-            sessions={},  # session_id → 대화 이력
+            sessions={},  # session_id → 대화 이력 (LRU 순서 유지)
+            session_locks={},  # session_id → Lock (동일 세션 요청 직렬화)
+            lock=threading.Lock(),  # 위 두 dict를 보호하는 전역 락
         )
         yield
         state.clear()
@@ -164,16 +196,34 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
                 ),
             )
         sessions: dict[str, list] = state["sessions"]
+        session_locks: dict[str, threading.Lock] = state["session_locks"]
+        lock: threading.Lock = state["lock"]
         session_id = req.session_id or uuid.uuid4().hex
-        history = sessions.get(session_id)
-        if req.session_id is not None and history is None:
-            raise HTTPException(status_code=404, detail=f"세션을 찾을 수 없습니다: {session_id}")
 
-        result = agent.run(req.message, history=history)
+        with lock:
+            if req.session_id is not None and req.session_id not in sessions:
+                raise HTTPException(
+                    status_code=404, detail=f"세션을 찾을 수 없습니다: {session_id}"
+                )
+            session_lock = session_locks.setdefault(session_id, threading.Lock())
 
-        sessions[session_id] = result.history
-        if len(sessions) > MAX_SESSIONS:  # 단순 FIFO 정리
-            sessions.pop(next(iter(sessions)))
+        # 같은 세션의 동시 요청은 직렬화해 이력 유실(lost update)을 방지한다.
+        # 다른 세션끼리는 병렬 처리된다.
+        with session_lock:
+            with lock:
+                history = sessions.get(session_id)
+            try:
+                result = agent.run(req.message, history=history)
+            except Exception as exc:  # noqa: BLE001 — API 경계에서 상태 코드로 변환
+                raise _map_agent_error(exc) from exc
+            with lock:
+                # LRU: 재삽입으로 최근 사용 순서를 갱신한 뒤 가장 오래된 세션부터 제거
+                sessions.pop(session_id, None)
+                sessions[session_id] = result.history
+                while len(sessions) > MAX_SESSIONS:
+                    oldest = next(iter(sessions))
+                    sessions.pop(oldest, None)
+                    session_locks.pop(oldest, None)
 
         return ChatResponse(
             answer=result.answer,

@@ -64,6 +64,16 @@ def print_result(result: AgentResult) -> None:
     print(f"\n{result.answer}\n")
 
 
+def run_safely(agent: TitanicAgent, question: str, history=None) -> AgentResult | None:
+    """일시적 API 오류(네트워크/한도)로 데모 프로세스와 대화 이력이 죽지 않게 한다."""
+    try:
+        return agent.run(question, history=history)
+    except Exception as exc:  # noqa: BLE001 — CLI 최상위 경계
+        print(f"[오류] 요청 처리에 실패했습니다: {type(exc).__name__}: {exc}")
+        print("잠시 후 다시 시도해 주세요. (대화 이력은 유지됩니다)\n")
+        return None
+
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if a != "--mock"]
     mock = "--mock" in sys.argv[1:]
@@ -76,7 +86,9 @@ def main() -> None:
         return
 
     if args:  # 단일 질문 모드
-        print_result(agent.run(" ".join(args)))
+        result = run_safely(agent, " ".join(args))
+        if result is not None:
+            print_result(result)
         return
 
     # 대화형 모드 (멀티턴)
@@ -89,7 +101,9 @@ def main() -> None:
             break
         if not question or question.lower() in {"quit", "exit", "종료"}:
             break
-        result = agent.run(question, history=history)
+        result = run_safely(agent, question, history=history)
+        if result is None:
+            continue  # 이력 유지한 채 다음 입력 대기
         history = result.history
         print_result(result)
 

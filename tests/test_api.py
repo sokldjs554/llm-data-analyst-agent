@@ -87,3 +87,19 @@ def test_chat_unknown_session_returns_404(client_with_mock_llm):
         "/api/v1/chat", json={"message": "이어서", "session_id": "없는세션"}
     )
     assert res.status_code == 404
+
+
+class FailingLLM:
+    """LLM 호출이 실패하는 상황을 재현하는 스텁."""
+
+    def create_message(self, system, messages, tools):
+        raise RuntimeError("simulated LLM failure")
+
+
+def test_chat_maps_agent_failure_to_clean_error():
+    """LLM 예외가 원시 스택트레이스 대신 정돈된 오류 응답으로 변환되어야 한다."""
+    app = create_app(settings=make_settings(), llm=FailingLLM())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/chat", json={"message": "성별 생존율은?"})
+    assert res.status_code == 500
+    assert "오류" in res.json()["detail"]

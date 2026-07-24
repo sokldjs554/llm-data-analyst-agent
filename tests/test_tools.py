@@ -94,3 +94,53 @@ def test_predict_tool(executor):
 def test_unknown_tool(executor):
     with pytest.raises(ToolError):
         executor.execute("drop_table", {})
+
+
+# ── 리뷰에서 발견된 결함의 회귀 테스트 ──────────────────────────────
+
+
+def test_filters_reject_non_dict_items(executor):
+    """LLM이 스키마를 어겨 filters에 문자열을 보내도 크래시 대신 ToolError."""
+    with pytest.raises(ToolError):
+        executor.execute("analyze_survival", {"group_by": "Sex", "filters": ["Age > 30"]})
+
+
+def test_neq_filter_excludes_missing_values(executor, df):
+    """!= 필터가 결측(NaN) 행을 '값이 다름'으로 포함하지 않아야 한다."""
+    result = run(
+        executor,
+        "get_statistics",
+        {"column": "Age", "filters": [{"column": "Age", "op": "!=", "value": 30}]},
+    )
+    expected = int((df["Age"].notna() & (df["Age"] != 30)).sum())
+    assert result["count"] == expected  # 결측 177명이 섞이면 이 값보다 커진다
+
+
+def test_single_row_statistics_returns_strict_json(executor):
+    """단일 행 표본은 std가 NaN → 표준 JSON(null)으로 치환되어야 한다."""
+    raw = executor.execute(
+        "get_statistics",
+        {"column": "Age", "filters": [{"column": "PassengerId", "op": "==", "value": 1}]},
+    )
+    assert "NaN" not in raw  # RFC 8259 위반 리터럴 금지
+    result = json.loads(raw)
+    assert result["count"] == 1
+    assert result["std"] is None
+
+
+def test_predict_rejects_out_of_range_inputs(executor):
+    """도구 경로도 REST 경로처럼 입력을 검증해야 한다 (조용한 오답 방지)."""
+    with pytest.raises(ToolError):
+        executor.execute("predict_survival", {"pclass": 5, "sex": "female", "age": 30})
+    with pytest.raises(ToolError):
+        executor.execute("predict_survival", {"pclass": 1, "sex": "robot", "age": 30})
+    with pytest.raises(ToolError):
+        executor.execute("predict_survival", {"pclass": 1, "sex": "male", "age": -3})
+
+
+def test_analyze_survival_reports_missing_group_keys(executor):
+    """그룹 키 결측 인원을 명시해 총원-그룹합 모순을 없앤다."""
+    result = run(executor, "analyze_survival", {"group_by": "AgeGroup"})
+    assert result["excluded_missing_group_key"] == 177
+    group_sum = sum(g["passengers"] for g in result["groups"])
+    assert group_sum + result["excluded_missing_group_key"] == result["total_passengers"]

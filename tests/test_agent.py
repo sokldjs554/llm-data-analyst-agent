@@ -3,7 +3,13 @@
 import json
 
 from titanic_agent.agent import TitanicAgent
-from titanic_agent.llm import MockLLM, make_final_response, make_tool_use_response
+from titanic_agent.llm import (
+    LLMResponse,
+    MockLLM,
+    ToolUseBlock,
+    make_final_response,
+    make_tool_use_response,
+)
 
 
 def test_single_tool_call_flow(executor):
@@ -79,6 +85,33 @@ def test_max_turns_guard(executor):
 
     assert result.stop_reason == "max_turns_exceeded"
     assert len(llm.calls) == 3
+
+
+def test_max_tokens_with_tool_use_still_executes_tools(executor):
+    """max_tokens로 잘린 턴에 tool_use가 있으면 결과를 채워 세션 손상을 막아야 한다."""
+    truncated = LLMResponse(
+        stop_reason="max_tokens",
+        tool_use_blocks=[ToolUseBlock(id="t1", name="get_dataset_overview", input={})],
+    )
+    llm = MockLLM([truncated, make_final_response("요약입니다.")])
+    agent = TitanicAgent(llm, executor)
+    result = agent.run("데이터 요약해줘")
+
+    assert result.answer == "요약입니다."
+    assert len(result.tool_calls) == 1
+    # 이력에서 미결 tool_use 없이 tool_result가 바로 뒤따라야 한다
+    tool_result_turn = llm.calls[1]["messages"][-1]
+    assert tool_result_turn["content"][0]["tool_use_id"] == "t1"
+
+
+def test_max_tokens_without_tools_notes_truncation(executor):
+    llm = MockLLM(
+        [LLMResponse(stop_reason="max_tokens", text_blocks=[])]
+    )
+    agent = TitanicAgent(llm, executor)
+    result = agent.run("아주 긴 설명을 해줘")
+    assert "잘렸습니다" in result.answer
+    assert result.stop_reason == "max_tokens"
 
 
 def test_multiturn_history(executor):

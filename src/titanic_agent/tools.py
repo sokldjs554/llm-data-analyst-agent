@@ -9,6 +9,7 @@ LLM에게 임의 코드 실행 권한을 주는 대신, 구조화된 질의 인�
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pandas as pd
@@ -122,6 +123,17 @@ class ToolError(Exception):
     """도구 실행 중 사용자에게 전달 가능한 오류."""
 
 
+def _sanitize(obj: Any) -> Any:
+    """JSON 표준에 없는 NaN/inf를 None으로 재귀 치환한다 (예: 단일 행 표본의 std)."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
+
+
 class ToolExecutor:
     """도구 이름과 입력을 받아 실제 데이터/모델 연산을 수행한다."""
 
@@ -149,9 +161,10 @@ class ToolExecutor:
             result = handler(**tool_input)
         except ToolError:
             raise
-        except (TypeError, ValueError, KeyError) as exc:
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
             raise ToolError(f"도구 입력이 올바르지 않습니다: {exc}") from exc
-        return json.dumps(result, ensure_ascii=False, default=str)
+        # NaN/inf는 JSON 표준에 없어 strict 파서를 깨뜨리므로 None으로 치환한다
+        return json.dumps(_sanitize(result), ensure_ascii=False, default=str, allow_nan=False)
 
     # ── 내부 구현 ─────────────────────────────────────────────────────
     def _overview(self) -> dict:
@@ -161,6 +174,12 @@ class ToolExecutor:
         if not filters:
             return df
         for f in filters:
+            # LLM이 스키마를 어기고 문자열 등을 보낼 수 있으므로 형태부터 검증
+            if not isinstance(f, dict):
+                raise ToolError(
+                    "filters의 각 항목은 {column, op, value} 객체여야 합니다. "
+                    f"받은 값: {f!r}"
+                )
             column, op, value = f.get("column"), f.get("op"), f.get("value")
             if column not in QUERYABLE_COLUMNS:
                 raise ToolError(
@@ -180,7 +199,9 @@ class ToolExecutor:
             if op == "==":
                 mask = series == value
             elif op == "!=":
-                mask = series != value
+                # pandas에서 NaN != value 는 True라 결측 행이 섞여 통계가 왜곡된다.
+                # ==와 상보적이 되도록 결측 행은 제외한다.
+                mask = (series != value) & series.notna()
             elif op == ">":
                 mask = series > value
             elif op == ">=":
@@ -200,9 +221,17 @@ class ToolExecutor:
         if df.empty:
             return {"group_by": group_by, "groups": [], "note": "조건에 맞는 승객이 없습니다."}
         grouped = df.groupby(group_by, observed=True)["Survived"].agg(["count", "sum", "mean"])
+        # groupby는 그룹 키가 결측인 행을 조용히 제외하므로, 제외 인원을 명시해
+        # LLM이 "전체 N명 중"이라고 잘못 인용하지 않게 한다 (예: AgeGroup 결측 177명)
+        missing_key = int(df[group_by].isna().sum())
         return {
             "group_by": group_by,
             "total_passengers": int(len(df)),
+            **(
+                {"excluded_missing_group_key": missing_key}
+                if missing_key
+                else {}
+            ),
             "groups": [
                 {
                     "group": str(idx),
@@ -253,6 +282,21 @@ class ToolExecutor:
         fare: float | None = None,
         embarked: str = "S",
     ) -> dict:
+        # 도구 스키마의 enum/범위는 서버가 강제하지 않으므로 실행기에서 재검증한다.
+        # (검증 없이는 OneHotEncoder(handle_unknown="ignore")가 미지의 값을 전부 0으로
+        # 인코딩해 오류 없이 무의미한 확률을 반환한다)
+        if pclass not in (1, 2, 3):
+            raise ToolError(f"pclass는 1, 2, 3 중 하나여야 합니다: {pclass!r}")
+        if sex not in ("male", "female"):
+            raise ToolError(f"sex는 'male' 또는 'female'이어야 합니다: {sex!r}")
+        if embarked not in ("S", "C", "Q"):
+            raise ToolError(f"embarked는 'S', 'C', 'Q' 중 하나여야 합니다: {embarked!r}")
+        if not (0 <= float(age) <= 120):
+            raise ToolError(f"age는 0~120 사이여야 합니다: {age!r}")
+        if int(sibsp) < 0 or int(parch) < 0:
+            raise ToolError("sibsp/parch는 0 이상이어야 합니다.")
+        if fare is not None and float(fare) < 0:
+            raise ToolError(f"fare는 0 이상이어야 합니다: {fare!r}")
         if fare is None:
             # 같은 등급 승객의 운임 중앙값으로 대치
             fare = float(self.df.loc[self.df["Pclass"] == pclass, "Fare"].median())
