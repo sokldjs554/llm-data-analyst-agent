@@ -1,5 +1,7 @@
 # LLM Data Analyst Agent
 
+![tests](https://github.com/sokldjs554/llm-data-analyst-agent/actions/workflows/tests.yml/badge.svg)
+
 **자연어 질문을 도구 호출로 해석해 데이터 분석과 ML 예측을 수행하는 LLM 기반 AI Agent + 시스템 연계 REST API**
 
 > "여성과 남성의 생존율을 비교해줘" → 에이전트가 분석 도구를 스스로 호출 → 실제 데이터 수치를 근거로 답변
@@ -102,6 +104,36 @@ flowchart LR
 3. **LLM 의존/비의존 API 분리** — ML 예측·데이터 조회 엔드포인트는 LLM 없이 동작합니다.
    연계 시스템이 필요한 만큼만 도입할 수 있고, LLM 장애가 ML 서비스로 전파되지 않습니다.
 
+## 겪은 문제와 해결 (트러블슈팅)
+
+구현 후 4개 관점(정확성·견고성·문서 일치성·API 규약)의 코드 리뷰를 거쳐 결함 10건을 찾아
+수정했고, **모든 수정에 재현 회귀 테스트를 남겼습니다** (테스트 30건 → 38건, 커밋 이력 참고).
+대표 사례 3가지:
+
+**1. `max_tokens`로 잘린 턴이 대화 세션을 영구 손상시키는 문제**
+- **증상**: 응답이 길이 제한에 걸리며 끝난 턴에 도구 호출(tool_use)이 포함되어 있으면,
+  결과 없는 도구 호출이 대화 이력에 남음. 같은 세션의 다음 요청부터 LLM API가
+  "미결 tool_use" 오류(400)를 반환 → 세션 복구 불가
+- **원인**: 에이전트 루프가 `stop_reason == "tool_use"`일 때만 도구를 실행하도록 분기
+- **해결**: 분기 기준을 stop_reason이 아니라 **tool_use 블록의 존재 여부**로 변경.
+  잘린 턴이라도 완결된 도구 호출은 실행해 이력을 항상 유효한 상태로 유지
+
+**2. LLM이 도구 스키마를 어긴 입력을 보내면 서버가 500으로 죽는 문제**
+- **증상**: `filters`에 객체 배열 대신 문자열(`"Age > 30"`)이 오면 `AttributeError`가
+  에이전트 루프를 뚫고 올라와 API 500 발생
+- **원인**: LLM의 도구 입력은 스키마를 "대체로" 지키지만 보장되지 않는다는 점을 간과
+- **해결**: 실행기에서 입력 형태를 재검증하고, 모든 오류를 `is_error` 도구 결과로 변환해
+  **LLM이 오류 메시지를 읽고 스스로 재시도**하도록 설계 (오류 메시지에 허용 목록 포함)
+
+**3. 도구 결과의 NaN이 표준 위반 JSON을 만드는 문제**
+- **증상**: 필터 결과가 1행이면 표준편차가 `NaN` → `{"std": NaN}` 출력 (RFC 8259 위반).
+  `!=` 필터는 pandas 의미론상 결측 행을 포함해 통계를 왜곡
+- **해결**: NaN/inf → `null` 치환, `!=` 필터에 결측 제외 결합, 그룹 키 결측 인원을
+  결과에 명시(`excluded_missing_group_key`)해 LLM이 표본 크기를 정확히 인용하게 함
+
+> 공통 교훈: **LLM을 신뢰 경계 밖의 입력원으로 취급**해야 한다는 것.
+> 도구 계층이 모든 비정상 입력을 흡수하면 에이전트는 "실수해도 정정하는" 시스템이 된다.
+
 ## 빠른 시작
 
 ```bash
@@ -179,7 +211,11 @@ curl -X POST http://localhost:8000/api/v1/chat \
 
 ## 기술 스택
 
-Python 3.10+ · Claude API (`claude-opus-4-8`, tool use) · FastAPI · pandas · scikit-learn · pytest
+Python 3.10+ · Claude API (`claude-opus-4-8`, tool use) · FastAPI · pandas · scikit-learn · pytest · GitHub Actions (CI)
+
+## 라이선스
+
+[MIT](LICENSE)
 
 ## 로드맵
 
